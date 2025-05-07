@@ -1,0 +1,163 @@
+/****************************************************************/
+/* Authors: Rolando Trujillo-Rasua		                        */
+/* Goal: To model BB84 symbolically. Without requiring an       */
+/*      authentic quantum channel.                              */
+/* Date: 2025												    */
+/* Important notes:                                             */
+/*    1- If the authentic channel between Alice and Bob is      */
+/*      not unique, i.e. if it does not use a session           */
+/*      identifier, then the protocol is vulnerable to replay   */ 
+/*      attacks.                                                */
+/*    2- The last message received by Bob should be typed,      */ 
+/*    otherwise agreement does not hold. An alternative is to   */
+/*     have a key confirmation step.                            */
+/****************************************************************/
+
+
+theory bb84_no_qauth_channel
+
+begin
+
+builtins: xor 
+
+
+#include "./modules/RandomBasisEncoding.t"
+#include "./modules/QChannel.t"
+#include "./modules/AuthClassicalChannel.t"
+
+
+//------------- Corrupt rule --------------------//
+rule DishonestAgentsSetup: 
+[
+]--[
+    Corrupt($A),
+    OnlyOnce(<'Corrupt', $A>),  
+]->[
+    !Dishonest($A), 
+]
+
+
+
+//-------------Protocol rules -------------------------//
+
+rule Alice1:
+[
+Fr(~n), //given a nonce n to be share with Bob 
+Fr(~k), //let k be a random basis
+Fr(~id), //let id be a session id and a quantum state identifier  
+]--[
+    A_Session_1($a, $b, ~id, ~n, ~k),    //Mark the execution step for sanity checks
+]->
+[
+    A_Session_1($a, $b, ~id, ~n, ~k),    //start a session
+    REnc($a, ~id, ~n, ~k), //Create the random basis encoding of n with k. 
+    QOut($a, ~id), //send the quantum state via an authentic channel
+]
+
+
+rule Bob1_1:
+[
+    QIn($b,~id), //given the reception of a QS id from Alice. 
+    Fr(~r), //Bob generates a source of randomness.  
+]--[
+    B_Session_1($b, $a, ~id, ~r), //For sanity checks. 
+]->
+[
+    B_Session_1($b, $a, ~id, ~r), //save the session data. 
+    RDec($b, ~id, ~r), //establishes that Bob wishes to measure QS id. 
+]
+
+rule Bob1_2:
+[
+    B_Session_1($b, $a, ~id, ~r), //given a session
+    !Dec($b, ~id, v),   //and a measurement of the QS id by Bob.   
+]--[
+        B_Session_2($b, $a, ~id, v, ~r), //for sanity checks
+]->
+[
+    B_Session_2($b, $a, ~id, v, ~r), 
+    Out_A($b, $a, <~r, 'DONE'>),  //Bob sends via an authentic channel it source of randomness. 
+]
+
+rule Alice2:
+[
+    A_Session_1($a, $b, ~id, ~n, ~k),    //given a session 
+    In_A($b, $a, <~r, 'DONE'>), //and an input from an authentic channel
+]--[
+    A_Out_XOR($a, $b, ~k),
+    Running($a, $b, ~n),
+//    Secret(~n),   //This secrecy claim doesn't hold.  
+]->
+[
+    Out_A($a, $b, <~id, ~k>), //For simplicity, Alice sends back to Bob k rather than k XOR r 
+]
+
+rule Bob2:
+[
+    B_Session_2($b, $a, ~id, v, ~r), //given a session
+    In_A($a, $b, <~id, k>), //and an input from an authentic channel
+]--[
+        Commit($b, $a, v XOR k XOR ~r),
+        Secret($b, $a, v XOR k XOR ~r), 
+]->
+[
+]
+
+// -------------------- Source Lemmas -------------------- //	
+// lemma sources [sources]:
+// 	"All #i id s c . AdvRandomDecodedQS(id, s, c, xorvalue)@#i ==> (
+// 		(Ex #j . KU(s)@j & #j < #i)
+//         |
+// 		(Ex #j . KU(xorvalue)@j & #j < #i)
+// 	)
+// 	"
+
+
+
+/*Sanity check*/
+lemma AllStepsAreReachable:
+    exists-trace
+	"
+    Ex #i #j #x #y #z a b id n k r v . 
+        A_Session_1(a, b, id, n, k)@i 
+        & 
+        B_Session_1(b, a, id, r)@j 
+        & 
+        B_Session_2(b, a, id, v, r)@x
+        & 
+        Running(a, b, n)@y
+        & 
+        Commit(b, a, n)@z
+	"
+
+
+lemma AgreementIsReachable:
+    exists-trace
+	"
+    Ex #i #j a b n . Commit(b, a, n)@i & Running(a, b, n)@j  
+	"
+
+
+lemma secrecy:
+    "All a b x #i.
+        Secret(a, b, x)@i ==> 
+            not (Ex #j. K(x)@j)
+            |
+            (Ex #j . Corrupt(a)@j)
+            |
+            (Ex #j . Corrupt(b)@j)
+    "
+
+/*Standard agreement property*/
+lemma Agreement:
+    all-traces
+	"
+    All #i a b m. Commit(a, b, m)@i ==>
+        (Ex #j . Running(b, a, m)@j)
+        | 
+        (Ex #j . Corrupt(a)@j) 
+        | 
+        (Ex #j . Corrupt(b)@j) 
+	"
+
+end

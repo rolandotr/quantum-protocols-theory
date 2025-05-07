@@ -1,0 +1,203 @@
+/****************************************************************/
+/* Authors: Rolando Trujillo-Rasua		                        */
+/* Goal: To model the Quantum-based commitment introduced by    */
+/*          Brassard et al.                              	    */
+/* Date: 2025												    */
+/****************************************************************/
+
+
+theory commitment
+
+begin
+
+builtins: xor 
+
+#include "./modules/AuthQChannel.t"
+#include "./modules/NonCloningRestriction.t"
+#include "./modules/QSCollapseRestrictions.t"
+#include "./modules/Entanglement.t"
+#include "./modules/AuthClassicalChannel.t"
+#include "./modules/BasicEncoding.t"
+
+//------------- Corrupt rule --------------------//
+rule DishonestAgentsSetup: 
+[
+]--[
+    Corrupt($A),
+    OnlyOnce(<'Corrupt', $A>),  
+]->[
+    !Dishonest($A), 
+]
+
+
+// rule DecodedValueLeaks: 
+// [
+//     !Dishonest($A), 
+//     !Dec($A, ~id, s),
+// ]--[
+//     OnlyOnce(<'Leak', ~id, s>),  
+// ]->[
+//     Out(<~id, s>)
+// ]
+
+
+
+//------------------------------Protocol rules ----------------------//
+
+rule AdvCommitZero:
+[
+    !Dishonest($A), 
+    Fr(~s), 
+    Fr(~id),   
+]--[
+    AliceAdvSendQubit($A, ~id),
+    Running($A, $B, 'zero'),
+]->
+[
+    Adv_Session_1($A, $B, ~id),   //establish a session 
+    RecEnc($A, ~id, ~s),
+    QOut_A($A, $B,~id), //send the quantum state via an authentic channel
+    Out(<~id, ~s>),
+]
+
+
+restriction AdvDoesNotSendSameQubitTwice: 
+"
+    All #i #j id a b . AliceAdvSendQubit(a, id)@#i & AliceAdvSendQubit(b, id)@#j ==> #i = #j 
+"
+
+
+/**Alice commits to a zero, hence encodes b in a rectilinear basis */
+rule AliceZero:
+[
+Fr(~s), 
+Fr(~id), //let id be a session id and a quantum state identifier  
+]--[
+    A_Session_1($A, $B, ~id, ~s, 'zero'),    //Mark the execution step for sanity checks
+    Running($A, $B, 'zero'),
+]->
+[
+    A_Session_1($A, $B, ~id, ~s, 'zero'),    //start a session
+    RecEnc($A, ~id, ~s), 
+    QOut_A($A, $B,~id), //send the quantum state via an authentic channel
+]
+
+/**Alice commits to a one, hence encodes b in the diagonal basis */
+rule AliceOne:
+[
+Fr(~s), 
+Fr(~id), //let id be a session id and a quantum state identifier  
+]--[
+    A_Session_1($A, $B, ~id, ~s, 'one'),    //Mark the execution step for sanity checks
+    Running($A, $B, 'one'),
+]->
+[
+    A_Session_1($A, $B, ~id, ~s, 'one'),    //start a session
+    DiagEnc($A, ~id, ~s),  
+    QOut_A($A, $B,~id), //send the quantum state via an authentic channel
+]
+
+rule Bob1_1_Rectilinear:
+[
+    QIn_A($A, $B,~id), //given the reception of a QS id from Alice. 
+]--[
+    B_Session_1($B, $A, ~id, 'Rec'), //For sanity checks. 
+]->
+[
+    B_Session_1($B, $A, ~id, 'Rec'), //save the session data. 
+    RecDec($B, ~id), //establishes that Bob wishes to measure QS id. 
+]
+
+rule Bob1_1_Diagonal:
+[
+    QIn_A($A, $B,~id), //given the reception of a QS id from Alice. 
+]--[
+    B_Session_1($B, $A, ~id, 'Diag'), //For sanity checks. 
+]->
+[
+    B_Session_1($B, $A, ~id, 'Diag'), //save the session data. 
+    DiagDec($B, ~id), //establishes that Bob wishes to measure QS id. 
+]
+
+rule Bob1_2:
+[
+    B_Session_1($B, $A, ~id, t), //given a session
+    !Dec($B, ~id, v),   //and a measurement of the QS id by Bob.   
+]--[
+        B_Session_2($B, $A, ~id, v, t), //for sanity checks
+        BobMeasures(~id, v),
+]->
+[
+    B_Session_2($B, $A, ~id, v, t), 
+    Out_A($B, $A, 'DONE'),  //Bob sends via an authentic channel it source of randomness. 
+]
+
+rule Alice2:
+[
+    A_Session_1($A, $B, ~id, ~s, $t),    //given a session 
+    In_A($B, $A, 'DONE'), //and an input from an authentic channel
+]--[
+]->
+[
+    Out_A($A, $B, <~id, $t, ~s>), //Alice sends back to Bob b 
+]
+
+rule Alice2AdvGeneral:
+[
+    !Dishonest($A), 
+    Adv_Session_1($A, $B, ~id),
+    In_A($B, $A, 'DONE'), //and an input from an authentic channel
+    In(s), //and given a message to be injected by the adversary
+]--[
+    AliceDecAndSend($A, ~id, s),
+]->
+[
+    Out_A($A, $B, <~id, 'zero', s>), //Alice sends back to Bob  
+]
+
+rule Bob2Zero:
+[
+    B_Session_2($B, $A, ~id, v, enc), //given a session
+    In_A($A, $B, <~id, $t, s>), //and an input from an authentic channel
+]--[
+        _restrict(s = v & enc = 'Rec' & $t = 'zero'),
+        Commit($B, $A, 'zero'),
+]->
+[
+]
+
+rule Bob2One:
+[
+    B_Session_2($B, $A, ~id, v, enc), //given a session
+    In_A($A, $B, <~id, $t, s>), //and an input from an authentic channel
+]--[
+        _restrict(s = v & enc = 'Diag' & $t = 'one'),
+        Commit($B, $A, 'one'),
+]->
+[
+]
+
+// restriction Equality:
+//     "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction OnlyOnce: 
+    "All #i #j x. OnlyOnce(x)@#i & OnlyOnce(x)@#j ==> #i = #j"
+
+
+lemma AgreementIsReachable:
+    exists-trace
+	"
+    Ex #i #j a b n . Commit(b, a, n)@i & Running(a, b, n)@j  
+	"
+
+
+/*Standard agreement property*/
+lemma Agreement:
+    all-traces
+	"
+    All #i a b m. Commit(b, a, m)@i ==>
+        (Ex #j . Running(a, b, m)@j) 
+        | (Ex #j . Corrupt(b)@j)
+	"
+
+end
